@@ -1,0 +1,19 @@
+# Exclude everything that doesn't belong in the npm package
+.agents/
+__tests__/
+.ai-context.md
+*.md
+!README.md
+node_modules/
+.DS_Store
+*.log
+# MMDT course docs — not part of the package
+product.md
+ui.md
+engineering.md
+opportunity_solution_tree.md
+seven_interview_synthesis.md
+updated_problem_statement.md
+implementation_plan.md
+walkthrough.md
+task.md
