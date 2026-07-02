@@ -37,8 +37,9 @@ export function add(a: number, b: number): number {
 export const PI = 3.14159;
 `, 'utf-8');
 
-    // Run the CLI against the temp directory, skip clipboard
-    const { stdout, stderr } = await execFileAsync('node', [CLI, tmpDir, '--clipboard-only'], {
+    // Run the CLI against the temp directory; --stdout avoids clipboard
+    // and file side effects (headless CI has no clipboard at all)
+    const { stdout, stderr } = await execFileAsync('node', [CLI, tmpDir, '--stdout'], {
       cwd: process.cwd(),
       timeout: 10000
     });
