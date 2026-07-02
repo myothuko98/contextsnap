@@ -1,12 +1,12 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { mkdtemp, writeFile, unlink, rmdir, readFile, access } from 'fs/promises';
+import { mkdtemp, writeFile, rm } from 'fs/promises';
 import { join } from 'path';
 import os from 'os';
 
 const execFileAsync = promisify(execFile);
-const CLI = join(process.cwd(), 'bin/contextify.js');
+const CLI = join(process.cwd(), 'bin/contextsnap.js');
 
 // ─────────────────────────────────────────────
 // Integration: Happy Path Flow
@@ -15,6 +15,11 @@ const CLI = join(process.cwd(), 'bin/contextify.js');
 // ─────────────────────────────────────────────
 describe('Integration — Happy path', () => {
   let tmpDir;
+
+  afterEach(async () => {
+    if (tmpDir) await rm(tmpDir, { recursive: true, force: true });
+    tmpDir = undefined;
+  });
 
   it('scans a directory and writes .ai-context.md', async () => {
     // Setup: create a temp directory with a TS utility file
@@ -33,7 +38,7 @@ export const PI = 3.14159;
 `, 'utf-8');
 
     // Run the CLI against the temp directory, skip clipboard
-    const { stdout, stderr } = await execFileAsync('node', [CLI, tmpDir, '--no-file'], {
+    const { stdout, stderr } = await execFileAsync('node', [CLI, tmpDir, '--clipboard-only'], {
       cwd: process.cwd(),
       timeout: 10000
     });

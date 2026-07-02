@@ -2,7 +2,7 @@
 
 > Generate a token-optimized context snapshot of your codebase utilities and copy it to your clipboard — in one command.
 
-[![npm version](https://img.shields.io/npm/v/contextify-cli)](https://www.npmjs.com/package/contextify-cli)
+[![npm version](https://img.shields.io/npm/v/contextsnap)](https://www.npmjs.com/package/contextsnap)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
 
@@ -14,7 +14,7 @@ When you vibe-code with an LLM (Claude, ChatGPT, Gemini), you paste a prompt and
 
 ## The Fix
 
-Run `contextify` against your utilities folder. It scans your exports, strips implementation bodies, and copies a **token-optimized** context snapshot straight to your clipboard. Paste it into your LLM and get code that actually reuses what you already have.
+Run `contextsnap` against your utilities folder. It scans your exports, strips implementation bodies, and copies a **token-optimized** context snapshot straight to your clipboard. Paste it into your LLM and get code that actually reuses what you already have.
 
 ```
   [Contextify] ──────────────────────────────────────────
@@ -22,7 +22,7 @@ Run `contextify` against your utilities folder. It scans your exports, strips im
   ├── currency.ts (formatUSD, getExchangeRate)
   └── theme.ts (colors, breakpoints)
   ───────────────────────────────────────────────────────
-  ✔ Copied to clipboard! (Saved ~1,420 token cycles)
+  ✔ Copied to clipboard! (~1,420 tokens)
 ```
 
 ---
@@ -31,13 +31,13 @@ Run `contextify` against your utilities folder. It scans your exports, strips im
 
 ### Use without installing (recommended)
 ```bash
-npx contextify-cli src/utils
+npx contextsnap src/utils
 ```
 
 ### Install globally
 ```bash
-npm install -g contextify-cli
-contextify src/utils
+npm install -g contextsnap
+contextsnap src/utils
 ```
 
 ---
@@ -45,32 +45,40 @@ contextify src/utils
 ## Usage
 
 ```bash
-contextify <directory> [options]
+contextsnap [directory] [options]
 ```
 
 ### Arguments
 
 | Argument | Description |
 |---|---|
-| `<directory>` | Path to the folder you want to scan (e.g. `src/utils`) |
+| `[directory]` | Path to the folder you want to scan (e.g. `src/utils`). If omitted, contextsnap auto-detects the first of: `src/utils`, `src/lib`, `src/helpers`, `utils`, `lib`, `src` |
 
 ### Options
 
 | Flag | Description |
 |---|---|
-| `--no-file` | Skip writing `.ai-context.md` to disk; clipboard only |
+| `--clipboard-only` | Skip writing `.ai-context.md` to disk; clipboard only |
+| `--ignore=<pattern>` | Skip files/folders whose path contains `<pattern>` (repeatable) |
+| `-h, --help` | Show help with examples |
 
 ### Examples
 
 ```bash
+# Zero-config: auto-detect your utils folder
+contextsnap
+
 # Scan utils folder, copy to clipboard, save .ai-context.md
-contextify src/utils
+contextsnap src/utils
 
 # Scan entire src directory, clipboard only
-contextify src --no-file
+contextsnap src --clipboard-only
+
+# Skip test files and mocks
+contextsnap src --ignore=__tests__ --ignore=.mock
 
 # Use via npx without global install
-npx contextify-cli src/utils
+npx contextsnap src/utils
 ```
 
 ---
@@ -78,9 +86,9 @@ npx contextify-cli src/utils
 ## What it does
 
 1. **Scans** the target directory recursively for `.js`, `.ts`, `.jsx`, `.tsx` files
-2. **Extracts** exported function/const/class/interface signatures and JSDoc blocks
+2. **Extracts** exported function/const/class/interface signatures, `export default`, `export { ... }` lists, and JSDoc blocks
 3. **Strips** implementation bodies — only the contract (name, params, return type) is kept
-4. **Compiles** a token-optimized markdown file
+4. **Compiles** a token-optimized markdown file with reuse instructions for the AI and per-file import hints
 5. **Copies** it to your clipboard automatically (`pbcopy` / `xclip` / `clip`)
 6. **Prints** a retro-green ASCII tree of everything scanned
 
@@ -91,10 +99,16 @@ npx contextify-cli src/utils
 The clipboard and `.ai-context.md` file look like this:
 
 ```markdown
-# CONTEXTIFY CODEBASE CONTEXT (Generated 2026-07-01)
+# CONTEXTSNAP CODEBASE CONTEXT (Generated 2026-07-02)
+
+> **Instructions for the AI assistant:** The utilities below ALREADY EXIST
+> in this project. When writing code, import and reuse them instead of
+> re-implementing anything.
 
 ## File: date.ts
 ​```typescript
+// import from './date'
+
 /**
  * Formats an ISO string to a human-readable local date.
  * @param isoString - The ISO date string to convert
@@ -111,7 +125,7 @@ This format is intentionally compact — it tells the LLM **what exists and what
 
 ## How to use with an LLM
 
-1. Run `contextify src/utils`
+1. Run `contextsnap src/utils`
 2. Open your LLM (Claude, ChatGPT, Gemini, etc.)
 3. Press `Cmd+V` / `Ctrl+V` to paste the context
 4. Write your prompt: *"Write a checkout form component using the zip validator from context."*
@@ -140,7 +154,7 @@ npm install
 npm test
 ```
 
-Tests use [Vitest](https://vitest.dev/). All 16 tests pass.
+Tests use [Vitest](https://vitest.dev/).
 
 ---
 

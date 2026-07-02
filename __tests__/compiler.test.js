@@ -93,8 +93,19 @@ describe('compileMarkdown()', () => {
     expect(md).not.toContain('## File: empty.ts');
   });
 
-  it('includes the CONTEXTIFY header with a date', () => {
+  it('includes the CONTEXTSNAP header with a date', () => {
     const md = compileMarkdown(mockFiles);
-    expect(md).toContain('# CONTEXTIFY CODEBASE CONTEXT');
+    expect(md).toContain('# CONTEXTSNAP CODEBASE CONTEXT');
+  });
+
+  it('includes the AI reuse preamble', () => {
+    const md = compileMarkdown(mockFiles);
+    expect(md).toContain('ALREADY EXIST');
+    expect(md).toContain('reuse');
+  });
+
+  it('includes an import path hint per file', () => {
+    const md = compileMarkdown(mockFiles, '/project/src/utils');
+    expect(md).toContain("// import from './validation'");
   });
 });
