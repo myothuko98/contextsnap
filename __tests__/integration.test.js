@@ -45,7 +45,26 @@ export const PI = 3.14159;
 
     // Should exit cleanly (no exception thrown = exit code 0)
     // Output should contain the tree and the file
-    expect(stdout + stderr).toMatch(/contextify|Contextify|utils\.ts|add/i);
+    expect(stdout + stderr).toMatch(/contextsnap|utils\.ts|add/i);
+  }, 15000);
+
+  it('--stdout prints clean markdown to stdout, decorations to stderr', async () => {
+    tmpDir = await mkdtemp(join(os.tmpdir(), 'ctx-integration-'));
+    await writeFile(join(tmpDir, 'math.ts'), `
+export function double(n: number): number {
+  return n * 2;
+}
+`, 'utf-8');
+
+    const { stdout } = await execFileAsync('node', [CLI, tmpDir, '--stdout'], {
+      cwd: process.cwd(),
+      timeout: 10000
+    });
+
+    expect(stdout).toContain('# CONTEXTSNAP CODEBASE CONTEXT');
+    expect(stdout).toContain('export function double');
+    expect(stdout).not.toContain('n * 2');          // body stripped
+    expect(stdout).not.toContain('[Contextsnap]');  // tree went to stderr
   }, 15000);
 });
 

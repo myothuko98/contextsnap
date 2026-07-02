@@ -193,4 +193,89 @@ export { alpha, beta as renamedBeta };
     expect(named.name).toContain('renamedBeta');
     expect(named.signature).toContain('export { alpha, beta as renamedBeta };');
   });
+
+  it('ignores export syntax mentioned inside comments', async () => {
+    const tmpFile = await fixture('comments.ts', `
+// This file used to say: export function ghost() {}
+/* Also mentioned: export const phantom = 1; and export { spooky } */
+
+export function real(x: number): number {
+  return x;
+}
+`);
+    const result = await parseFile(tmpFile);
+    expect(result.exports).toHaveLength(1);
+    expect(result.exports[0].name).toBe('real');
+  });
+
+  it('extracts CommonJS exports.foo and module.exports.bar', async () => {
+    const tmpFile = await fixture('cjs.js', `
+/**
+ * Adds two numbers.
+ */
+exports.add = function (a, b) {
+  return a + b;
+};
+
+module.exports.subtract = (a, b) => {
+  return a - b;
+};
+
+exports.MAX_RETRIES = 5;
+`);
+    const result = await parseFile(tmpFile);
+
+    const add = result.exports.find(e => e.name === 'add');
+    expect(add).toBeDefined();
+    expect(add.type).toBe('function');
+    expect(add.jsdoc).toContain('Adds two numbers');
+    expect(add.signature).not.toContain('return a + b');
+
+    const sub = result.exports.find(e => e.name === 'subtract');
+    expect(sub).toBeDefined();
+    expect(sub.type).toBe('function');
+
+    const max = result.exports.find(e => e.name === 'MAX_RETRIES');
+    expect(max).toBeDefined();
+    expect(max.type).toBe('const');
+  });
+
+  it('keeps default object params in the signature', async () => {
+    const tmpFile = await fixture('defparam.ts', `
+export function withOptions(data: string, options = {}) {
+  return data + JSON.stringify(options);
+}
+`);
+    const result = await parseFile(tmpFile);
+    const fn = result.exports.find(e => e.name === 'withOptions');
+    expect(fn).toBeDefined();
+    expect(fn.signature).toBe('export function withOptions(data: string, options = {});');
+    expect(fn.signature).not.toContain('JSON.stringify');
+  });
+
+  it('does not mistake property access or comparison for CommonJS exports', async () => {
+    const tmpFile = await fixture('not-cjs.js', `
+export function check(file) {
+  if (file.exports.length === 0) return false;
+  return file.exports.count !== 1;
+}
+`);
+    const result = await parseFile(tmpFile);
+    expect(result.exports).toHaveLength(1);
+    expect(result.exports[0].name).toBe('check');
+  });
+
+  it('extracts CommonJS module.exports object literal', async () => {
+    const tmpFile = await fixture('cjs-obj.js', `
+function one() { return 1; }
+function two() { return 2; }
+
+module.exports = { one, two };
+`);
+    const result = await parseFile(tmpFile);
+    const obj = result.exports.find(e => e.type === 'export');
+    expect(obj).toBeDefined();
+    expect(obj.name).toContain('one');
+    expect(obj.name).toContain('two');
+  });
 });

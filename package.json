@@ -1,6 +1,6 @@
 {
   "name": "contextsnap",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Generate a token-optimized context snapshot of your codebase utilities and copy it to your clipboard — instantly.",
   "type": "module",
   "bin": {
@@ -31,11 +31,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/myothuko98/contextify.git"
+    "url": "git+https://github.com/myothuko98/contextsnap.git"
   },
-  "homepage": "https://github.com/myothuko98/contextify#readme",
+  "homepage": "https://github.com/myothuko98/contextsnap#readme",
   "bugs": {
-    "url": "https://github.com/myothuko98/contextify/issues"
+    "url": "https://github.com/myothuko98/contextsnap/issues"
   },
   "engines": {
     "node": ">=18.0.0"

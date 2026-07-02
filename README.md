@@ -1,4 +1,4 @@
-# Contextify
+# Contextsnap
 
 > Generate a token-optimized context snapshot of your codebase utilities and copy it to your clipboard — in one command.
 
@@ -17,7 +17,7 @@ When you vibe-code with an LLM (Claude, ChatGPT, Gemini), you paste a prompt and
 Run `contextsnap` against your utilities folder. It scans your exports, strips implementation bodies, and copies a **token-optimized** context snapshot straight to your clipboard. Paste it into your LLM and get code that actually reuses what you already have.
 
 ```
-  [Contextify] ──────────────────────────────────────────
+  [Contextsnap] ─────────────────────────────────────────
   ├── date.ts (parseISO, formatLocal, diffDays)
   ├── currency.ts (formatUSD, getExchangeRate)
   └── theme.ts (colors, breakpoints)
@@ -52,15 +52,18 @@ contextsnap [directory] [options]
 
 | Argument | Description |
 |---|---|
-| `[directory]` | Path to the folder you want to scan (e.g. `src/utils`). If omitted, contextsnap auto-detects the first of: `src/utils`, `src/lib`, `src/helpers`, `utils`, `lib`, `src` |
+| `[directory ...]` | One or more folders to scan (e.g. `src/utils src/hooks`). If omitted, contextsnap auto-detects the first of: `src/utils`, `src/lib`, `src/helpers`, `utils`, `lib`, `src` |
 
 ### Options
 
 | Flag | Description |
 |---|---|
 | `--clipboard-only` | Skip writing `.ai-context.md` to disk; clipboard only |
-| `--ignore=<pattern>` | Skip files/folders whose path contains `<pattern>` (repeatable) |
+| `--stdout` | Print markdown to stdout for piping (no clipboard, no file) |
+| `--ignore=<pattern>` | Skip folders/files matching `<pattern>` — whole-name match, `*` wildcards supported (repeatable) |
 | `-h, --help` | Show help with examples |
+
+You can also put patterns in a `.contextsnapignore` file (one per line, `#` for comments).
 
 ### Examples
 
@@ -74,8 +77,14 @@ contextsnap src/utils
 # Scan entire src directory, clipboard only
 contextsnap src --clipboard-only
 
+# Scan multiple folders at once
+contextsnap src/utils src/hooks
+
 # Skip test files and mocks
-contextsnap src --ignore=__tests__ --ignore=.mock
+contextsnap src --ignore=__tests__ --ignore=*.mock.*
+
+# Pipe or redirect the markdown anywhere
+contextsnap src --stdout > context.md
 
 # Use via npx without global install
 npx contextsnap src/utils
@@ -86,7 +95,7 @@ npx contextsnap src/utils
 ## What it does
 
 1. **Scans** the target directory recursively for `.js`, `.ts`, `.jsx`, `.tsx` files
-2. **Extracts** exported function/const/class/interface signatures, `export default`, `export { ... }` lists, and JSDoc blocks
+2. **Extracts** exported function/const/class/interface signatures, `export default`, `export { ... }` lists, CommonJS `module.exports`, and JSDoc blocks
 3. **Strips** implementation bodies — only the contract (name, params, return type) is kept
 4. **Compiles** a token-optimized markdown file with reuse instructions for the AI and per-file import hints
 5. **Copies** it to your clipboard automatically (`pbcopy` / `xclip` / `clip`)
@@ -148,8 +157,8 @@ If clipboard copy fails, the tool warns you and falls back to `.ai-context.md`.
 ## Development
 
 ```bash
-git clone https://github.com/myothuko98/contextify.git
-cd contextify
+git clone https://github.com/myothuko98/contextsnap.git
+cd contextsnap
 npm install
 npm test
 ```

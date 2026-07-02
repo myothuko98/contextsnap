@@ -108,4 +108,14 @@ describe('compileMarkdown()', () => {
     const md = compileMarkdown(mockFiles, '/project/src/utils');
     expect(md).toContain("// import from './validation'");
   });
+
+  it('includes the project stack line when provided', () => {
+    const md = compileMarkdown(mockFiles, '/project/src/utils', { stack: ['react', 'zod'] });
+    expect(md).toContain('**Project stack:** react, zod');
+  });
+
+  it('omits the stack line when empty', () => {
+    const md = compileMarkdown(mockFiles, '/project/src/utils', { stack: [] });
+    expect(md).not.toContain('Project stack');
+  });
 });

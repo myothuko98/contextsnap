@@ -1,35 +1,43 @@
 #!/usr/bin/env node
 import path from 'path';
 import fs from 'fs/promises';
-import { scanDirectory } from '../lib/scanner.js';
+import { scanDirectory, loadIgnoreFile } from '../lib/scanner.js';
 import { parseFile } from '../lib/parser.js';
 import { compileMarkdown, generateASCIITree } from '../lib/compiler.js';
 import { copyToClipboard } from '../lib/clipboard.js';
 
 const CONTEXT_FILE = '.ai-context.md';
 const MAX_FILES = 300;
+const MAX_STACK_DEPS = 20;
 const AUTO_DETECT_DIRS = ['src/utils', 'src/lib', 'src/helpers', 'utils', 'lib', 'src'];
 
 const HELP = `
   contextsnap — snapshot your code's exports for pasting into an AI chat
 
   Usage:
-    contextsnap [directory] [options]
+    contextsnap [directory ...] [options]
 
   If no directory is given, contextsnap auto-detects the first of:
     ${AUTO_DETECT_DIRS.join(', ')}
 
   Options:
     --clipboard-only     Don't write ${CONTEXT_FILE}; copy to clipboard only
-    --ignore=<pattern>   Skip files/folders whose path contains <pattern>
-                         (repeatable: --ignore=__tests__ --ignore=.mock)
+    --stdout             Print the markdown to stdout (no clipboard, no file);
+                         great for piping: contextsnap src --stdout | pbcopy
+    --ignore=<pattern>   Skip files/folders matching <pattern>. Plain patterns
+                         match whole folder/file names; * wildcards supported
+                         (repeatable: --ignore=__tests__ --ignore=*.mock.*)
     -h, --help           Show this help
+
+  A ${'.contextsnapignore'} file in the current directory adds patterns
+  (one per line, # for comments).
 
   Examples:
     contextsnap                          # auto-detect your utils folder
-    contextsnap src/utils                # scan a specific folder
+    contextsnap src/utils src/hooks      # scan multiple folders
     contextsnap src --ignore=__tests__   # skip test files
     contextsnap src --clipboard-only     # no file written
+    contextsnap src --stdout > ctx.md    # redirect anywhere
 
   Then paste (Cmd+V / Ctrl+V) into Claude, ChatGPT or Gemini and prompt away.
 `;
@@ -42,6 +50,18 @@ async function isDirectory(p) {
   }
 }
 
+/** Reads dependency names from ./package.json for stack context, if present. */
+async function detectStack() {
+  try {
+    const raw = await fs.readFile(path.join(process.cwd(), 'package.json'), 'utf-8');
+    const pkg = JSON.parse(raw);
+    const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+    return Object.keys(deps).slice(0, MAX_STACK_DEPS);
+  } catch {
+    return [];
+  }
+}
+
 async function main() {
   const args = process.argv.slice(2);
 
@@ -51,63 +71,87 @@ async function main() {
   }
 
   const clipboardOnly = args.includes('--clipboard-only');
-  const ignorePatterns = args
+  const stdoutMode = args.includes('--stdout');
+  const cliIgnores = args
     .filter(a => a.startsWith('--ignore='))
     .map(a => a.slice('--ignore='.length))
     .filter(Boolean);
 
-  let targetDir = args.find(a => !a.startsWith('-'));
+  // In --stdout mode all decoration goes to stderr so stdout stays pipeable
+  const info = stdoutMode ? console.error : console.log;
+
+  const fileIgnores = await loadIgnoreFile(process.cwd());
+  const ignorePatterns = [...cliIgnores, ...fileIgnores];
+
+  let targetDirs = args.filter(a => !a.startsWith('-'));
 
   // No directory given — try common utility folders
-  if (!targetDir) {
+  if (targetDirs.length === 0) {
     for (const candidate of AUTO_DETECT_DIRS) {
       if (await isDirectory(path.resolve(candidate))) {
-        targetDir = candidate;
+        targetDirs = [candidate];
         break;
       }
     }
-    if (targetDir) {
-      console.log(`\x1b[36mℹ No directory given — auto-detected '${targetDir}'.\x1b[0m`);
+    if (targetDirs.length > 0) {
+      info(`\x1b[36mℹ No directory given — auto-detected '${targetDirs[0]}'.\x1b[0m`);
     } else {
       console.error(`\x1b[31m✘ No directory given and none of the usual folders (${AUTO_DETECT_DIRS.join(', ')}) exist.\x1b[0m`);
-      console.error(`  Usage: contextsnap <directory> [--clipboard-only] [--ignore=<pattern>]  (see --help)`);
+      console.error(`  Usage: contextsnap <directory ...> [--clipboard-only] [--stdout] [--ignore=<pattern>]  (see --help)`);
       process.exit(1);
     }
   }
 
-  const absTarget = path.resolve(targetDir);
-
-  // Validate directory exists
-  try {
-    const stat = await fs.stat(absTarget);
-    if (!stat.isDirectory()) {
-      console.error(`\x1b[31m✘ Error: '${targetDir}' is not a directory.\x1b[0m`);
+  // Validate all target directories
+  const absTargets = [];
+  for (const dir of targetDirs) {
+    const abs = path.resolve(dir);
+    try {
+      const stat = await fs.stat(abs);
+      if (!stat.isDirectory()) {
+        console.error(`\x1b[31m✘ Error: '${dir}' is not a directory.\x1b[0m`);
+        process.exit(1);
+      }
+    } catch {
+      console.error(`\x1b[31m✘ Error: Directory '${dir}' does not exist.\x1b[0m`);
       process.exit(1);
     }
-  } catch {
-    console.error(`\x1b[31m✘ Error: Directory '${targetDir}' does not exist.\x1b[0m`);
-    process.exit(1);
+    absTargets.push(abs);
   }
 
-  // Spinning loader
-  const frames = ['[ / ]', '[ - ]', '[ \\ ]', '[ | ]'];
-  let frame = 0;
-  const spinner = setInterval(() => {
-    process.stdout.write(`\r\x1b[32m${frames[frame++ % frames.length]}\x1b[0m scanning codebase structures...`);
-  }, 100);
+  // Single dir: paths shown relative to it. Multiple: relative to cwd.
+  const baseDir = absTargets.length === 1 ? absTargets[0] : process.cwd();
 
-  let files;
+  // Spinning loader (suppressed in --stdout mode to keep stdout clean)
+  let spinner;
+  if (!stdoutMode) {
+    const frames = ['[ / ]', '[ - ]', '[ \\ ]', '[ | ]'];
+    let frame = 0;
+    spinner = setInterval(() => {
+      process.stdout.write(`\r\x1b[32m${frames[frame++ % frames.length]}\x1b[0m scanning codebase structures...`);
+    }, 100);
+  }
+  const stopSpinner = () => {
+    if (spinner) {
+      clearInterval(spinner);
+      process.stdout.write('\r' + ' '.repeat(60) + '\r');
+    }
+  };
+
+  let files = [];
   try {
-    files = await scanDirectory(absTarget, ignorePatterns);
+    for (const abs of absTargets) {
+      files.push(...await scanDirectory(abs, ignorePatterns));
+    }
+    files = [...new Set(files)].sort();
   } catch (err) {
-    clearInterval(spinner);
+    stopSpinner();
     console.error(`\n\x1b[31m✘ Error scanning directory: ${err.message}\x1b[0m`);
     process.exit(1);
   }
 
   if (files.length > MAX_FILES) {
-    clearInterval(spinner);
-    process.stdout.write('\r' + ' '.repeat(50) + '\r');
+    stopSpinner();
     console.error(`\x1b[33m⚠ Too many files (${files.length}). Limit is ${MAX_FILES}.\x1b[0m`);
     console.error(`  Point at a smaller folder (e.g. src/utils) or exclude folders with --ignore=<pattern>.`);
     process.exit(1);
@@ -116,23 +160,30 @@ async function main() {
   // Parse all files
   const scannedFiles = await Promise.all(files.map(f => parseFile(f)));
 
-  clearInterval(spinner);
-  process.stdout.write('\r' + ' '.repeat(60) + '\r');
+  stopSpinner();
 
   // Display ASCII tree
-  console.log(generateASCIITree(scannedFiles, absTarget));
+  info(generateASCIITree(scannedFiles, baseDir));
 
   const hasExports = scannedFiles.some(f => f.exports.length > 0);
   if (!hasExports) {
-    console.log(`\x1b[33m⚠ Scanned ${scannedFiles.length} file(s) but found no exports.\x1b[0m`);
-    console.log(`  contextsnap looks for: export function/const/class/interface/type,`);
-    console.log(`  export default, and export { ... } statements.`);
-    console.log(`  Files using module.exports (CommonJS) are not supported yet.`);
+    info(`\x1b[33m⚠ Scanned ${scannedFiles.length} file(s) but found no exports.\x1b[0m`);
+    info(`  contextsnap looks for: export function/const/class/interface/type,`);
+    info(`  export default, export { ... }, and CommonJS module.exports.`);
     process.exit(0);
   }
 
   // Compile markdown
-  const markdown = compileMarkdown(scannedFiles, absTarget);
+  const stack = await detectStack();
+  const markdown = compileMarkdown(scannedFiles, baseDir, { stack });
+  const tokenEstimate = Math.round(markdown.length / 4);
+
+  // --stdout: print and exit — no clipboard, no file
+  if (stdoutMode) {
+    process.stdout.write(markdown);
+    info(`\n  \x1b[1;32m✔ Context written to stdout. (~${tokenEstimate.toLocaleString()} tokens)\x1b[0m`);
+    return;
+  }
 
   // Write .ai-context.md
   if (!clipboardOnly) {
@@ -142,7 +193,6 @@ async function main() {
 
   // Copy to clipboard
   const copied = await copyToClipboard(markdown);
-  const tokenEstimate = Math.round(markdown.length / 4);
 
   if (copied) {
     console.log(`\n  \x1b[1;32m✔ Copied to clipboard! (~${tokenEstimate.toLocaleString()} tokens)\x1b[0m`);
