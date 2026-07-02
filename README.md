@@ -45,7 +45,7 @@ contextsnap src/utils
 ## Usage
 
 ```bash
-contextsnap [directory] [options]
+contextsnap [directory ...] [options]
 ```
 
 ### Arguments
@@ -60,10 +60,15 @@ contextsnap [directory] [options]
 |---|---|
 | `--clipboard-only` | Skip writing `.ai-context.md` to disk; clipboard only |
 | `--stdout` | Print markdown to stdout for piping (no clipboard, no file) |
+| `--watch` | Re-run automatically on every file change. Press Ctrl+C to stop |
+| `--format=<fmt>` | Output format: `markdown` (default) or `json` |
 | `--ignore=<pattern>` | Skip folders/files matching `<pattern>` — whole-name match, `*` wildcards supported (repeatable) |
+| `--mcp` | Start an MCP stdio server for Claude Desktop / Claude Code / Cursor |
 | `-h, --help` | Show help with examples |
 
-You can also put patterns in a `.contextsnapignore` file (one per line, `#` for comments).
+You can also set persistent defaults in a `.contextsnaprc.json` file (see [Config file](#config-file)).
+
+You can also put ignore patterns in a `.contextsnapignore` file (one per line, `#` for comments).
 
 ### Examples
 
@@ -86,9 +91,147 @@ contextsnap src --ignore=__tests__ --ignore=*.mock.*
 # Pipe or redirect the markdown anywhere
 contextsnap src --stdout > context.md
 
+# Live refresh — re-runs every time you save a file
+contextsnap src/utils --watch
+
+# Machine-readable JSON output
+contextsnap src/utils --format=json --stdout | jq '.files[].path'
+
+# Start MCP server (used by Claude Desktop / Claude Code / Cursor)
+contextsnap --mcp
+
 # Use via npx without global install
 npx contextsnap src/utils
 ```
+
+---
+
+## MCP Server Mode
+
+**The easiest way to use contextsnap** — your AI gets codebase context automatically, no copy-paste needed.
+
+`contextsnap --mcp` starts a [Model Context Protocol](https://modelcontextprotocol.io) stdio server. Claude Desktop, Claude Code, and Cursor can call it as a tool directly.
+
+### Setup: Claude Desktop
+
+Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+
+```json
+{
+  "mcpServers": {
+    "contextsnap": {
+      "command": "contextsnap",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+Restart Claude Desktop. The `get_context` tool will appear. Just ask:
+
+> *"What utility functions does this project already have?"*
+
+and Claude will call `get_context` automatically to scan your codebase.
+
+### Setup: Cursor / other MCP-compatible tools
+
+```json
+{
+  "mcpServers": {
+    "contextsnap": {
+      "command": "npx",
+      "args": ["contextsnap", "--mcp"]
+    }
+  }
+}
+```
+
+### MCP Tool: `get_context`
+
+| Parameter | Type | Description |
+|---|---|---|
+| `dirs` | `string[]` (optional) | Directories to scan. Defaults to auto-detect. |
+| `ignore` | `string[]` (optional) | Patterns to skip (e.g. `["__tests__", "*.mock.*"]`) |
+
+---
+
+## Watch Mode
+
+`contextsnap src/utils --watch` runs the pipeline once immediately, then re-runs whenever any `.js/.ts/.jsx/.tsx` file changes. Your `.ai-context.md` stays fresh automatically.
+
+```bash
+contextsnap src/utils --watch
+# [Contextsnap] ✔ Copied to clipboard! (~1,420 tokens)
+# ℹ Watch mode active — re-running on file changes. Press Ctrl+C to stop.
+# [Contextsnap] Refreshed at 2:34:07 PM
+# [Contextsnap] Refreshed at 2:41:22 PM
+```
+
+Works on macOS, Windows, and Linux (Node ≥18).
+
+---
+
+## Config file
+
+Create `.contextsnaprc.json` in your project root to set persistent defaults. CLI flags always override.
+
+```json
+{
+  "dirs": ["src/utils", "src/hooks"],
+  "ignore": ["__tests__", "*.mock.*"],
+  "format": "markdown",
+  "clipboardOnly": false
+}
+```
+
+| Key | Type | Description |
+|---|---|---|
+| `dirs` | `string[]` | Default directories to scan |
+| `ignore` | `string[]` | Default ignore patterns |
+| `format` | `"markdown"` \| `"json"` | Output format |
+| `clipboardOnly` | `boolean` | Don't write `.ai-context.md` |
+| `stdout` | `boolean` | Print to stdout |
+
+---
+
+## GitHub Action
+
+Auto-commit `.ai-context.md` on every push so your team always has a fresh snapshot:
+
+```yaml
+# .github/workflows/context.yml
+name: Update context snapshot
+on: [push]
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: myothuko98/contextsnap@v2
+        with:
+          dirs: 'src/utils src/hooks'
+          ignore: '__tests__'
+      - run: |
+          git config user.name "contextsnap-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add .ai-context.md
+          git diff --staged --quiet || git commit -m "chore: update context snapshot [skip ci]"
+          git push
+```
+
+### Action inputs
+
+| Input | Description |
+|---|---|
+| `dirs` | Space-separated directories to scan |
+| `ignore` | Space-separated ignore patterns |
+
+### Action outputs
+
+| Output | Description |
+|---|---|
+| `context-file` | Path to the generated file (always `.ai-context.md`) |
+| `token-estimate` | Approximate token count |
 
 ---
 
@@ -108,7 +251,7 @@ npx contextsnap src/utils
 The clipboard and `.ai-context.md` file look like this:
 
 ```markdown
-# CONTEXTSNAP CODEBASE CONTEXT (Generated 2026-07-02)
+# CONTEXTSNAP CODEBASE CONTEXT (Generated 2026-07-03)
 
 > **Instructions for the AI assistant:** The utilities below ALREADY EXIST
 > in this project. When writing code, import and reuse them instead of
@@ -128,17 +271,35 @@ export const DEFAULT_LOCALE: string;
 ​```
 ```
 
-This format is intentionally compact — it tells the LLM **what exists and what the contract is**, without wasting tokens on implementation details.
+Use `--format=json` for structured output:
+
+```json
+{
+  "generated": "2026-07-03",
+  "stack": ["react", "zod"],
+  "files": [
+    {
+      "path": "date.ts",
+      "importFrom": "./date",
+      "exports": [
+        { "name": "formatLocal", "type": "function", "signature": "export function formatLocal(isoString: string): string;" }
+      ]
+    }
+  ]
+}
+```
 
 ---
 
-## How to use with an LLM
+## How to use with an LLM (manual mode)
 
 1. Run `contextsnap src/utils`
 2. Open your LLM (Claude, ChatGPT, Gemini, etc.)
 3. Press `Cmd+V` / `Ctrl+V` to paste the context
 4. Write your prompt: *"Write a checkout form component using the zip validator from context."*
 5. Get code that actually uses your existing utilities
+
+Or use [MCP mode](#mcp-server-mode) and skip steps 1–3 entirely.
 
 ---
 

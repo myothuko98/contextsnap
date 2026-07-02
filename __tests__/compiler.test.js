@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileMarkdown, generateASCIITree } from '../lib/compiler.js';
+import { compileMarkdown, compileJSON, generateASCIITree } from '../lib/compiler.js';
 import path from 'path';
 
 // ─────────────────────────────────────────────
@@ -117,5 +117,59 @@ describe('compileMarkdown()', () => {
   it('omits the stack line when empty', () => {
     const md = compileMarkdown(mockFiles, '/project/src/utils', { stack: [] });
     expect(md).not.toContain('Project stack');
+  });
+});
+
+// ─────────────────────────────────────────────
+// Unit: compileJSON
+// ─────────────────────────────────────────────
+describe('compileJSON()', () => {
+  const mockFiles = [
+    {
+      filepath: '/project/src/utils/math.ts',
+      exports: [
+        { name: 'add', type: 'function', signature: 'export function add(a: number, b: number): number;' },
+        { name: 'PI',  type: 'const',    signature: 'export const PI: number;' },
+      ]
+    },
+    {
+      filepath: '/project/src/utils/empty.ts',
+      exports: []
+    }
+  ];
+
+  it('returns valid JSON', () => {
+    const json = compileJSON(mockFiles, '/project/src/utils');
+    expect(() => JSON.parse(json)).not.toThrow();
+  });
+
+  it('has a generated date and files array', () => {
+    const parsed = JSON.parse(compileJSON(mockFiles, '/project/src/utils'));
+    expect(parsed.generated).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(Array.isArray(parsed.files)).toBe(true);
+  });
+
+  it('includes exports per file', () => {
+    const parsed = JSON.parse(compileJSON(mockFiles, '/project/src/utils'));
+    const math = parsed.files.find(f => f.path.includes('math'));
+    expect(math).toBeDefined();
+    expect(math.exports.length).toBe(2);
+    expect(math.exports[0].name).toBe('add');
+  });
+
+  it('omits files with no exports', () => {
+    const parsed = JSON.parse(compileJSON(mockFiles, '/project/src/utils'));
+    expect(parsed.files.some(f => f.path.includes('empty'))).toBe(false);
+  });
+
+  it('includes an importFrom path without extension', () => {
+    const parsed = JSON.parse(compileJSON(mockFiles, '/project/src/utils'));
+    const math = parsed.files.find(f => f.path.includes('math'));
+    expect(math.importFrom).toBe('./math');
+  });
+
+  it('includes the stack when provided', () => {
+    const parsed = JSON.parse(compileJSON(mockFiles, '/project/src/utils', { stack: ['react'] }));
+    expect(parsed.stack).toContain('react');
   });
 });

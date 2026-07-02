@@ -1,6 +1,6 @@
 {
   "name": "contextsnap",
-  "version": "1.2.0",
+  "version": "2.0.0",
   "description": "Generate a token-optimized context snapshot of your codebase utilities and copy it to your clipboard — instantly.",
   "type": "module",
   "bin": {
@@ -12,6 +12,8 @@
   "files": [
     "bin/",
     "lib/",
+    "action/",
+    "action.yml",
     "README.md",
     "LICENSE"
   ],
@@ -39,6 +41,10 @@
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.0.0"
   },
   "devDependencies": {
     "vitest": "^3.0.0"

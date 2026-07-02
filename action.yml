@@ -1,0 +1,27 @@
+name: 'Contextsnap'
+description: 'Generate a token-optimized codebase context snapshot (.ai-context.md) for LLM-assisted development'
+author: 'myothuko98'
+
+inputs:
+  dirs:
+    description: 'Space-separated directories to scan (e.g. "src/utils src/hooks"). Defaults to auto-detecting common folders.'
+    required: false
+    default: ''
+  ignore:
+    description: 'Space-separated ignore patterns (e.g. "__tests__ *.mock.*"). Whole-name match, * wildcards supported.'
+    required: false
+    default: ''
+
+outputs:
+  context-file:
+    description: 'Path to the generated context file (always .ai-context.md)'
+  token-estimate:
+    description: 'Approximate token count of the generated context'
+
+runs:
+  using: 'node20'
+  main: 'action/index.js'
+
+branding:
+  icon: 'camera'
+  color: 'green'

@@ -3,8 +3,9 @@ import path from 'path';
 import fs from 'fs/promises';
 import { scanDirectory, loadIgnoreFile } from '../lib/scanner.js';
 import { parseFile } from '../lib/parser.js';
-import { compileMarkdown, generateASCIITree } from '../lib/compiler.js';
+import { compileMarkdown, compileJSON, generateASCIITree } from '../lib/compiler.js';
 import { copyToClipboard } from '../lib/clipboard.js';
+import { loadConfig } from '../lib/config.js';
 
 const CONTEXT_FILE = '.ai-context.md';
 const MAX_FILES = 300;
@@ -24,13 +25,16 @@ const HELP = `
     --clipboard-only     Don't write ${CONTEXT_FILE}; copy to clipboard only
     --stdout             Print the markdown to stdout (no clipboard, no file);
                          great for piping: contextsnap src --stdout | pbcopy
+    --watch              Re-run on every source file change (Ctrl+C to stop)
+    --format=<fmt>       Output format: markdown (default) or json
     --ignore=<pattern>   Skip files/folders matching <pattern>. Plain patterns
                          match whole folder/file names; * wildcards supported
                          (repeatable: --ignore=__tests__ --ignore=*.mock.*)
+    --mcp                Start an MCP stdio server for Claude Desktop / Cursor
     -h, --help           Show this help
 
-  A ${'.contextsnapignore'} file in the current directory adds patterns
-  (one per line, # for comments).
+  A ${'.contextsnaprc.json'} file in the current directory sets persistent defaults.
+  A ${'.contextsnapignore'} file adds ignore patterns (one per line, # for comments).
 
   Examples:
     contextsnap                          # auto-detect your utils folder
@@ -38,6 +42,9 @@ const HELP = `
     contextsnap src --ignore=__tests__   # skip test files
     contextsnap src --clipboard-only     # no file written
     contextsnap src --stdout > ctx.md    # redirect anywhere
+    contextsnap src --watch              # live refresh on save
+    contextsnap src --format=json        # machine-readable output
+    contextsnap --mcp                    # start MCP server
 
   Then paste (Cmd+V / Ctrl+V) into Claude, ChatGPT or Gemini and prompt away.
 `;
@@ -50,7 +57,6 @@ async function isDirectory(p) {
   }
 }
 
-/** Reads dependency names from ./package.json for stack context, if present. */
 async function detectStack() {
   try {
     const raw = await fs.readFile(path.join(process.cwd(), 'package.json'), 'utf-8');
@@ -62,69 +68,11 @@ async function detectStack() {
   }
 }
 
-async function main() {
-  const args = process.argv.slice(2);
-
-  if (args.includes('--help') || args.includes('-h')) {
-    console.log(HELP);
-    return;
-  }
-
-  const clipboardOnly = args.includes('--clipboard-only');
-  const stdoutMode = args.includes('--stdout');
-  const cliIgnores = args
-    .filter(a => a.startsWith('--ignore='))
-    .map(a => a.slice('--ignore='.length))
-    .filter(Boolean);
-
-  // In --stdout mode all decoration goes to stderr so stdout stays pipeable
-  const info = stdoutMode ? console.error : console.log;
-
-  const fileIgnores = await loadIgnoreFile(process.cwd());
-  const ignorePatterns = [...cliIgnores, ...fileIgnores];
-
-  let targetDirs = args.filter(a => !a.startsWith('-'));
-
-  // No directory given — try common utility folders
-  if (targetDirs.length === 0) {
-    for (const candidate of AUTO_DETECT_DIRS) {
-      if (await isDirectory(path.resolve(candidate))) {
-        targetDirs = [candidate];
-        break;
-      }
-    }
-    if (targetDirs.length > 0) {
-      info(`\x1b[36mℹ No directory given — auto-detected '${targetDirs[0]}'.\x1b[0m`);
-    } else {
-      console.error(`\x1b[31m✘ No directory given and none of the usual folders (${AUTO_DETECT_DIRS.join(', ')}) exist.\x1b[0m`);
-      console.error(`  Usage: contextsnap <directory ...> [--clipboard-only] [--stdout] [--ignore=<pattern>]  (see --help)`);
-      process.exit(1);
-    }
-  }
-
-  // Validate all target directories
-  const absTargets = [];
-  for (const dir of targetDirs) {
-    const abs = path.resolve(dir);
-    try {
-      const stat = await fs.stat(abs);
-      if (!stat.isDirectory()) {
-        console.error(`\x1b[31m✘ Error: '${dir}' is not a directory.\x1b[0m`);
-        process.exit(1);
-      }
-    } catch {
-      console.error(`\x1b[31m✘ Error: Directory '${dir}' does not exist.\x1b[0m`);
-      process.exit(1);
-    }
-    absTargets.push(abs);
-  }
-
-  // Single dir: paths shown relative to it. Multiple: relative to cwd.
-  const baseDir = absTargets.length === 1 ? absTargets[0] : process.cwd();
-
-  // Spinning loader (suppressed in --stdout mode to keep stdout clean)
+/** Runs scan → parse → output once. Returns when done. */
+async function runOnce({ absTargets, baseDir, allIgnores, clipboardOnly, stdoutMode, format, info, silent }) {
+  // Spinning loader (suppressed in --stdout mode and in silent watch refreshes)
   let spinner;
-  if (!stdoutMode) {
+  if (!stdoutMode && !silent) {
     const frames = ['[ / ]', '[ - ]', '[ \\ ]', '[ | ]'];
     let frame = 0;
     spinner = setInterval(() => {
@@ -141,7 +89,7 @@ async function main() {
   let files = [];
   try {
     for (const abs of absTargets) {
-      files.push(...await scanDirectory(abs, ignorePatterns));
+      files.push(...await scanDirectory(abs, allIgnores));
     }
     files = [...new Set(files)].sort();
   } catch (err) {
@@ -157,12 +105,9 @@ async function main() {
     process.exit(1);
   }
 
-  // Parse all files
   const scannedFiles = await Promise.all(files.map(f => parseFile(f)));
-
   stopSpinner();
 
-  // Display ASCII tree
   info(generateASCIITree(scannedFiles, baseDir));
 
   const hasExports = scannedFiles.some(f => f.exports.length > 0);
@@ -170,29 +115,26 @@ async function main() {
     info(`\x1b[33m⚠ Scanned ${scannedFiles.length} file(s) but found no exports.\x1b[0m`);
     info(`  contextsnap looks for: export function/const/class/interface/type,`);
     info(`  export default, export { ... }, and CommonJS module.exports.`);
-    process.exit(0);
+    return;
   }
 
-  // Compile markdown
   const stack = await detectStack();
-  const markdown = compileMarkdown(scannedFiles, baseDir, { stack });
-  const tokenEstimate = Math.round(markdown.length / 4);
+  const output = format === 'json'
+    ? compileJSON(scannedFiles, baseDir, { stack })
+    : compileMarkdown(scannedFiles, baseDir, { stack });
+  const tokenEstimate = Math.round(output.length / 4);
 
-  // --stdout: print and exit — no clipboard, no file
   if (stdoutMode) {
-    process.stdout.write(markdown);
+    process.stdout.write(output);
     info(`\n  \x1b[1;32m✔ Context written to stdout. (~${tokenEstimate.toLocaleString()} tokens)\x1b[0m`);
     return;
   }
 
-  // Write .ai-context.md
   if (!clipboardOnly) {
-    const outPath = path.join(process.cwd(), CONTEXT_FILE);
-    await fs.writeFile(outPath, markdown, 'utf-8');
+    await fs.writeFile(path.join(process.cwd(), CONTEXT_FILE), output, 'utf-8');
   }
 
-  // Copy to clipboard
-  const copied = await copyToClipboard(markdown);
+  const copied = await copyToClipboard(output);
 
   if (copied) {
     console.log(`\n  \x1b[1;32m✔ Copied to clipboard! (~${tokenEstimate.toLocaleString()} tokens)\x1b[0m`);
@@ -205,6 +147,100 @@ async function main() {
   }
 
   process.stdout.write('\x07'); // terminal bell
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+  const cwd = process.cwd();
+
+  // Load persistent config first (CLI flags override below)
+  const config = await loadConfig(cwd);
+
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log(HELP);
+    return;
+  }
+
+  // MCP server mode: start and block (early exit — no other flags apply)
+  if (args.includes('--mcp')) {
+    const { startMcpServer } = await import('../lib/mcp.js');
+    await startMcpServer();
+    return;
+  }
+
+  // Merge CLI flags with config (CLI always wins)
+  const clipboardOnly = args.includes('--clipboard-only') || (config.clipboardOnly ?? false);
+  const stdoutMode    = args.includes('--stdout')         || (config.stdout       ?? false);
+  const watchMode     = args.includes('--watch');
+  const format        = args.find(a => a.startsWith('--format='))?.slice('--format='.length)
+                        ?? config.format ?? 'markdown';
+
+  const cliIgnores = args
+    .filter(a => a.startsWith('--ignore='))
+    .map(a => a.slice('--ignore='.length))
+    .filter(Boolean);
+
+  // In --stdout mode all decoration goes to stderr so stdout stays pipeable
+  const info = stdoutMode ? console.error : console.log;
+
+  const fileIgnores = await loadIgnoreFile(cwd);
+  const allIgnores  = [...cliIgnores, ...(config.ignore ?? []), ...fileIgnores];
+
+  // Target dirs: CLI args > config.dirs > auto-detect
+  let targetDirs = args.filter(a => !a.startsWith('-'));
+  if (targetDirs.length === 0 && config.dirs?.length > 0) {
+    targetDirs = config.dirs;
+    info(`\x1b[36mℹ Using directories from .contextsnaprc: ${targetDirs.join(', ')}\x1b[0m`);
+  }
+
+  if (targetDirs.length === 0) {
+    for (const candidate of AUTO_DETECT_DIRS) {
+      if (await isDirectory(path.resolve(candidate))) {
+        targetDirs = [candidate];
+        break;
+      }
+    }
+    if (targetDirs.length > 0) {
+      info(`\x1b[36mℹ No directory given — auto-detected '${targetDirs[0]}'.\x1b[0m`);
+    } else {
+      console.error(`\x1b[31m✘ No directory given and none of the usual folders (${AUTO_DETECT_DIRS.join(', ')}) exist.\x1b[0m`);
+      console.error(`  Usage: contextsnap <directory ...> [--clipboard-only] [--stdout] [--ignore=<pattern>]  (see --help)`);
+      process.exit(1);
+    }
+  }
+
+  // Validate all target directories exist
+  const absTargets = [];
+  for (const dir of targetDirs) {
+    const abs = path.resolve(dir);
+    try {
+      const stat = await fs.stat(abs);
+      if (!stat.isDirectory()) {
+        console.error(`\x1b[31m✘ Error: '${dir}' is not a directory.\x1b[0m`);
+        process.exit(1);
+      }
+    } catch {
+      console.error(`\x1b[31m✘ Error: Directory '${dir}' does not exist.\x1b[0m`);
+      process.exit(1);
+    }
+    absTargets.push(abs);
+  }
+
+  const baseDir = absTargets.length === 1 ? absTargets[0] : cwd;
+  const runOpts = { absTargets, baseDir, allIgnores, clipboardOnly, stdoutMode, format, info };
+
+  await runOnce({ ...runOpts, silent: false });
+
+  if (watchMode) {
+    const { watchDirs } = await import('../lib/watcher.js');
+    info(`\x1b[36mℹ Watch mode active — re-running on file changes. Press Ctrl+C to stop.\x1b[0m`);
+    const stop = watchDirs(absTargets, async () => {
+      await runOnce({ ...runOpts, silent: true });
+      info(`\x1b[36m[Contextsnap] Refreshed at ${new Date().toLocaleTimeString()}\x1b[0m`);
+    });
+    process.on('SIGINT', () => { stop(); process.exit(0); });
+    // Watchers keep the event loop alive; no explicit wait needed
+  }
 }
 
 main();
