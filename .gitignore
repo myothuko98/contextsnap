@@ -2,3 +2,15 @@ node_modules/
 .ai-context.md
 *.log
 .DS_Store
+
+# Local-only: course docs and agent skills (not part of the package)
+.agents/
+product.md
+engineering.md
+implementation_plan.md
+opportunity_solution_tree.md
+seven_interview_synthesis.md
+updated_problem_statement.md
+walkthrough.md
+task.md
+ui.md
