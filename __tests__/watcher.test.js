@@ -35,8 +35,8 @@ describe('watchDirs()', () => {
     // Trigger a change
     await writeFile(file, 'export const x = 2;', 'utf-8');
 
-    // Wait for debounce + callback
-    await new Promise(r => setTimeout(r, 800));
+    // Wait for debounce + callback (poll fallback on Linux fires every 500ms + 300ms debounce)
+    await new Promise(r => setTimeout(r, 1200));
 
     expect(called).toBeGreaterThan(0);
   }, 5000);
