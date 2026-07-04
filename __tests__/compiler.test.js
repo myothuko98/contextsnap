@@ -118,6 +118,26 @@ describe('compileMarkdown()', () => {
     const md = compileMarkdown(mockFiles, '/project/src/utils', { stack: [] });
     expect(md).not.toContain('Project stack');
   });
+
+  it('appends the line number to the signature when present', () => {
+    const withLine = [{
+      filepath: '/project/src/utils/validation.ts',
+      exports: [{
+        name: 'validateZip',
+        type: 'function',
+        signature: 'export function validateZip(zip: string): boolean;',
+        line: 42
+      }]
+    }];
+    const md = compileMarkdown(withLine);
+    expect(md).toContain('export function validateZip(zip: string): boolean; // :42');
+  });
+
+  it('omits the line suffix when line is absent', () => {
+    const md = compileMarkdown(mockFiles);
+    expect(md).toContain('export function validateZip(zip: string): boolean;\n');
+    expect(md).not.toContain('boolean; // :');
+  });
 });
 
 // ─────────────────────────────────────────────

@@ -1,6 +1,6 @@
 {
   "name": "contextsnap",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "description": "Generate a token-optimized context snapshot of your codebase utilities and copy it to your clipboard — instantly.",
   "type": "module",
   "bin": {

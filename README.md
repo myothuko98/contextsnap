@@ -272,9 +272,9 @@ The clipboard and `.ai-context.md` file look like this:
  * Formats an ISO string to a human-readable local date.
  * @param isoString - The ISO date string to convert
  */
-export function formatLocal(isoString: string): string;
+export function formatLocal(isoString: string): string; // :12
 
-export const DEFAULT_LOCALE: string;
+export const DEFAULT_LOCALE: string; // :4
 ​```
 ```
 
@@ -289,7 +289,7 @@ Use `--format=json` for structured output:
       "path": "date.ts",
       "importFrom": "./date",
       "exports": [
-        { "name": "formatLocal", "type": "function", "signature": "export function formatLocal(isoString: string): string;" }
+        { "name": "formatLocal", "type": "function", "signature": "export function formatLocal(isoString: string): string;", "line": 12 }
       ]
     }
   ]

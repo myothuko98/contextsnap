@@ -427,6 +427,26 @@ export function real() {
     expect(result.exports[0].name).toBe('real');
   });
 
+  it('records the 1-based source line of each export', async () => {
+    const tmpFile = await fixture('lines.ts', `// header comment
+export const FIRST = 1;
+
+/**
+ * Documented.
+ */
+export function second(x: number): number {
+  return x;
+}
+
+export class Third {}
+`);
+    const result = await parseFile(tmpFile);
+
+    expect(result.exports.find(e => e.name === 'FIRST').line).toBe(2);
+    expect(result.exports.find(e => e.name === 'second').line).toBe(7);
+    expect(result.exports.find(e => e.name === 'Third').line).toBe(11);
+  });
+
   it('reports no warnings when regex extraction is complete', async () => {
     const tmpFile = await fixture('clean.js', `
 export function solid(a) { return a; }
