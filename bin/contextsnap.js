@@ -108,13 +108,19 @@ async function runOnce({ absTargets, baseDir, allIgnores, clipboardOnly, stdoutM
   const scannedFiles = await Promise.all(files.map(f => parseFile(f)));
   stopSpinner();
 
+  for (const f of scannedFiles) {
+    for (const w of f.warnings ?? []) {
+      info(`\x1b[33m⚠ ${path.relative(baseDir, f.filepath)}: ${w}\x1b[0m`);
+    }
+  }
+
   info(generateASCIITree(scannedFiles, baseDir));
 
   const hasExports = scannedFiles.some(f => f.exports.length > 0);
   if (!hasExports) {
     info(`\x1b[33m⚠ Scanned ${scannedFiles.length} file(s) but found no exports.\x1b[0m`);
-    info(`  contextsnap looks for: export function/const/class/interface/type,`);
-    info(`  export default, export { ... }, and CommonJS module.exports.`);
+    info(`  contextsnap looks for: export function/const/let/var/class/interface/type/enum,`);
+    info(`  export default, export { ... }, export * from, and CommonJS module.exports.`);
     return;
   }
 

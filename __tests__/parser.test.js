@@ -265,6 +265,178 @@ export function check(file) {
     expect(result.exports[0].name).toBe('check');
   });
 
+  it('extracts export enum, abstract class, let and var', async () => {
+    const tmpFile = await fixture('forms.ts', `
+export enum Color {
+  Red,
+  Green
+}
+
+export abstract class Base {
+  abstract run(): void;
+  helper(): number { return 1; }
+}
+
+export let counter = 0;
+export var legacy = true;
+`);
+    const result = await parseFile(tmpFile);
+
+    const en = result.exports.find(e => e.name === 'Color');
+    expect(en).toBeDefined();
+    expect(en.type).toBe('enum');
+    expect(en.signature).toContain('Red');
+
+    const cls = result.exports.find(e => e.name === 'Base');
+    expect(cls).toBeDefined();
+    expect(cls.type).toBe('class');
+    expect(cls.signature).toContain('helper(): number;');
+    expect(cls.signature).not.toContain('return 1');
+
+    expect(result.exports.find(e => e.name === 'counter')).toBeDefined();
+    expect(result.exports.find(e => e.name === 'legacy')).toBeDefined();
+  });
+
+  it('extracts export default expression forms', async () => {
+    const idFile = await fixture('def-id.js', `
+const config = { a: 1 };
+export default config;
+`);
+    let result = await parseFile(idFile);
+    let def = result.exports.find(e => e.name === 'default');
+    expect(def).toBeDefined();
+    expect(def.signature).toBe('export default config;');
+    await rm(tmpDir, { recursive: true, force: true });
+
+    const objFile = await fixture('def-obj.js', `
+export default {
+  start() { return 1; },
+  stop: () => 2,
+  retries: 3
+};
+`);
+    result = await parseFile(objFile);
+    def = result.exports.find(e => e.name === 'default');
+    expect(def).toBeDefined();
+    expect(def.signature).toContain('retries');
+    expect(def.signature).not.toContain('return 1');
+    await rm(tmpDir, { recursive: true, force: true });
+
+    const arrowFile = await fixture('def-arrow.js', `
+export default async (input) => {
+  return input.trim();
+};
+`);
+    result = await parseFile(arrowFile);
+    def = result.exports.find(e => e.name === 'default');
+    expect(def).toBeDefined();
+    expect(def.signature).not.toContain('input.trim');
+  });
+
+  it('extracts export * and export * as ns re-exports', async () => {
+    const tmpFile = await fixture('star.js', `
+export * from './utils.js';
+export * as helpers from './helpers.js';
+`);
+    const result = await parseFile(tmpFile);
+
+    const star = result.exports.find(e => e.name === '*');
+    expect(star).toBeDefined();
+    expect(star.signature).toBe(`export * from './utils.js';`);
+
+    const ns = result.exports.find(e => e.name === 'helpers');
+    expect(ns).toBeDefined();
+    expect(ns.signature).toBe(`export * as helpers from './helpers.js';`);
+  });
+
+  it('extracts export type { ... } lists', async () => {
+    const tmpFile = await fixture('type-list.ts', `
+type A = string;
+type B = number;
+export type { A, B };
+`);
+    const result = await parseFile(tmpFile);
+    const list = result.exports.find(e => e.type === 'export');
+    expect(list).toBeDefined();
+    expect(list.name).toContain('A');
+    expect(list.name).toContain('B');
+  });
+
+  it('extracts generator function exports', async () => {
+    const tmpFile = await fixture('gen.js', `
+export function* walk(dir) {
+  yield dir;
+}
+`);
+    const result = await parseFile(tmpFile);
+    const gen = result.exports.find(e => e.name === 'walk');
+    expect(gen).toBeDefined();
+    expect(gen.type).toBe('function');
+    expect(gen.signature).not.toContain('yield');
+  });
+
+  it('is not derailed by regex literals containing quotes or braces', async () => {
+    const tmpFile = await fixture('regex.js', `
+export const QUOTE_RE = /"/;
+export const BRACE_RE = /{+/g;
+
+export function after(x) {
+  return x.replace(/"/g, '');
+}
+`);
+    const result = await parseFile(tmpFile);
+
+    const quote = result.exports.find(e => e.name === 'QUOTE_RE');
+    expect(quote).toBeDefined();
+    expect(quote.signature).toBe('export const QUOTE_RE = /"/;');
+
+    const brace = result.exports.find(e => e.name === 'BRACE_RE');
+    expect(brace).toBeDefined();
+
+    const fn = result.exports.find(e => e.name === 'after');
+    expect(fn).toBeDefined();
+    expect(fn.signature).not.toContain('replace');
+  });
+
+  it('emits a name-only stub and warning when the regexes miss an export the lexer sees', async () => {
+    const tmpFile = await fixture('destructure.js', `
+const settings = { host: 'x', port: 1 };
+export const { host, port } = settings;
+`);
+    const result = await parseFile(tmpFile);
+
+    const host = result.exports.find(e => e.name === 'host');
+    expect(host).toBeDefined();
+    expect(host.signature).toContain('signature unresolved');
+
+    const port = result.exports.find(e => e.name === 'port');
+    expect(port).toBeDefined();
+
+    expect(result.warnings.length).toBeGreaterThanOrEqual(2);
+    expect(result.warnings.some(w => w.includes('host'))).toBe(true);
+  });
+
+  it('does not extract phantom exports from export syntax inside strings', async () => {
+    const tmpFile = await fixture('phantom.js', `
+export function real() {
+  return \`export default { \${1} };\` + "export const fake = 1;";
+}
+`);
+    const result = await parseFile(tmpFile);
+    expect(result.exports).toHaveLength(1);
+    expect(result.exports[0].name).toBe('real');
+  });
+
+  it('reports no warnings when regex extraction is complete', async () => {
+    const tmpFile = await fixture('clean.js', `
+export function solid(a) { return a; }
+export const OK = 1;
+export default solid;
+`);
+    const result = await parseFile(tmpFile);
+    expect(result.warnings).toEqual([]);
+  });
+
   it('extracts CommonJS module.exports object literal', async () => {
     const tmpFile = await fixture('cjs-obj.js', `
 function one() { return 1; }

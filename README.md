@@ -238,11 +238,18 @@ jobs:
 ## What it does
 
 1. **Scans** the target directory recursively for `.js`, `.ts`, `.jsx`, `.tsx` files
-2. **Extracts** exported function/const/class/interface signatures, `export default`, `export { ... }` lists, CommonJS `module.exports`, and JSDoc blocks
+2. **Extracts** exported function/const/let/var/class/interface/type/enum signatures, `export default` (declarations and expressions), `export { ... }` / `export type { ... }` lists, `export * [as ns] from`, CommonJS `module.exports`, and JSDoc blocks
 3. **Strips** implementation bodies — only the contract (name, params, return type) is kept
-4. **Compiles** a token-optimized markdown file with reuse instructions for the AI and per-file import hints
-5. **Copies** it to your clipboard automatically (`pbcopy` / `xclip` / `clip`)
-6. **Prints** a retro-green ASCII tree of everything scanned
+4. **Validates** extraction against [es-module-lexer](https://github.com/guybedford/es-module-lexer): any ESM export the fast parser misses is still emitted as a name-only stub, with a warning — so the context never silently omits an export
+5. **Compiles** a token-optimized markdown file with reuse instructions for the AI and per-file import hints
+6. **Copies** it to your clipboard automatically (`pbcopy` / `xclip` / `clip`)
+7. **Prints** a retro-green ASCII tree of everything scanned
+
+### Known limitations
+
+- TypeScript generics with inline object constraints (`function f<T extends { a: string }>()`) may truncate the signature at the `{`.
+- Decorators are not included in extracted signatures.
+- The es-module-lexer validation pass is best-effort on TypeScript files (it is a JS ESM lexer); it fully covers `.js`/`.mjs`/`.jsx`.
 
 ---
 
