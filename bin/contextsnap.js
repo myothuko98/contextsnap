@@ -8,6 +8,8 @@ import { copyToClipboard } from '../lib/clipboard.js';
 import { loadConfig } from '../lib/config.js';
 
 const CONTEXT_FILE = '.ai-context.md';
+const INJECT_START = '<!-- contextsnap:start -->';
+const INJECT_END = '<!-- contextsnap:end -->';
 const MAX_FILES = 300;
 const MAX_STACK_DEPS = 20;
 const AUTO_DETECT_DIRS = ['src/utils', 'src/lib', 'src/helpers', 'utils', 'lib', 'src'];
@@ -30,6 +32,12 @@ const HELP = `
     --ignore=<pattern>   Skip files/folders matching <pattern>. Plain patterns
                          match whole folder/file names; * wildcards supported
                          (repeatable: --ignore=__tests__ --ignore=*.mock.*)
+    --inject[=<file>]    Write the snapshot between contextsnap markers in
+                         CLAUDE.md / AGENTS.md (or <file>) instead of the
+                         clipboard — every AI session picks it up automatically
+    --check              Exit 1 if the committed snapshot (${CONTEXT_FILE}, or
+                         the injected block with --inject) is out of date;
+                         use in CI like a lint step
     --mcp                Start an MCP stdio server for Claude Desktop / Cursor
     -h, --help           Show this help
 
@@ -44,6 +52,8 @@ const HELP = `
     contextsnap src --stdout > ctx.md    # redirect anywhere
     contextsnap src --watch              # live refresh on save
     contextsnap src --format=json        # machine-readable output
+    contextsnap src --inject             # keep CLAUDE.md context fresh
+    contextsnap src --check              # CI: fail if snapshot is stale
     contextsnap --mcp                    # start MCP server
 
   Then paste (Cmd+V / Ctrl+V) into Claude, ChatGPT or Gemini and prompt away.
@@ -55,6 +65,57 @@ async function isDirectory(p) {
   } catch {
     return false;
   }
+}
+
+async function isFile(p) {
+  try {
+    return (await fs.stat(p)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+async function readFileOrNull(p) {
+  try {
+    return await fs.readFile(p, 'utf-8');
+  } catch {
+    return null;
+  }
+}
+
+/** Strips the generation date so day-to-day regeneration compares equal. */
+function normalizeSnapshot(s) {
+  return s
+    .replace(/# CONTEXTSNAP CODEBASE CONTEXT \(Generated \d{4}-\d{2}-\d{2}\)/, '# CONTEXTSNAP CODEBASE CONTEXT (Generated)')
+    .replace(/"generated": "\d{4}-\d{2}-\d{2}"/, '"generated": ""')
+    .trim();
+}
+
+/** Returns the content between the contextsnap markers, or null if absent. */
+function extractInjectBlock(content) {
+  const s = content.indexOf(INJECT_START);
+  const e = content.indexOf(INJECT_END);
+  if (s === -1 || e === -1 || e <= s) return null;
+  return content.slice(s + INJECT_START.length, e).trim();
+}
+
+/**
+ * Replaces the marker block in existing content, or appends one. Existing
+ * user content outside the markers is never touched.
+ */
+function upsertInjectBlock(existing, output, targetPath) {
+  const block = `${INJECT_START}\n${output.trim()}\n${INJECT_END}`;
+  if (existing === null || existing.trim() === '') return block + '\n';
+
+  const s = existing.indexOf(INJECT_START);
+  const e = existing.indexOf(INJECT_END);
+  if (s !== -1 && e !== -1 && e > s) {
+    return existing.slice(0, s) + block + existing.slice(e + INJECT_END.length);
+  }
+  if (s === -1 && e === -1) {
+    return existing.trimEnd() + '\n\n' + block + '\n';
+  }
+  throw new Error(`Corrupt contextsnap markers in ${targetPath}: found one marker without the other.`);
 }
 
 async function detectStack() {
@@ -69,7 +130,7 @@ async function detectStack() {
 }
 
 /** Runs scan → parse → output once. Returns when done. */
-async function runOnce({ absTargets, baseDir, allIgnores, clipboardOnly, stdoutMode, format, info, silent }) {
+async function runOnce({ absTargets, baseDir, allIgnores, clipboardOnly, stdoutMode, format, info, silent, checkMode, injectTarget }) {
   // Spinning loader (suppressed in --stdout mode and in silent watch refreshes)
   let spinner;
   if (!stdoutMode && !silent) {
@@ -125,10 +186,49 @@ async function runOnce({ absTargets, baseDir, allIgnores, clipboardOnly, stdoutM
   }
 
   const stack = await detectStack();
+  // Injected snapshots live at the project root (CLAUDE.md), so import hints
+  // and display paths must be relative to cwd, not the scanned dir.
+  const contextBase = injectTarget ? process.cwd() : baseDir;
   const output = format === 'json'
-    ? compileJSON(scannedFiles, baseDir, { stack })
-    : compileMarkdown(scannedFiles, baseDir, { stack });
+    ? compileJSON(scannedFiles, contextBase, { stack })
+    : compileMarkdown(scannedFiles, contextBase, { stack });
   const tokenEstimate = Math.round(output.length / 4);
+
+  // ── --check: compare freshly generated output against the committed snapshot ──
+  if (checkMode) {
+    const targetName = injectTarget ?? CONTEXT_FILE;
+    const existing = await readFileOrNull(path.resolve(process.cwd(), targetName));
+    const committed = existing === null
+      ? null
+      : injectTarget ? extractInjectBlock(existing) : existing;
+
+    if (committed === null) {
+      console.error(`\x1b[31m✘ ${targetName} ${existing === null ? 'does not exist' : 'has no contextsnap block'} — run contextsnap${injectTarget ? ' --inject' : ''} first.\x1b[0m`);
+      process.exit(1);
+    }
+    if (normalizeSnapshot(committed) === normalizeSnapshot(output)) {
+      info(`\n  \x1b[1;32m✔ ${targetName} is up to date.\x1b[0m`);
+      return;
+    }
+    console.error(`\x1b[31m✘ ${targetName} is stale — exports changed. Run contextsnap${injectTarget ? ' --inject' : ''} to refresh.\x1b[0m`);
+    process.exit(1);
+  }
+
+  // ── --inject: upsert the snapshot between markers in CLAUDE.md / AGENTS.md ──
+  if (injectTarget) {
+    const targetAbs = path.resolve(process.cwd(), injectTarget);
+    const existing = await readFileOrNull(targetAbs);
+    let next;
+    try {
+      next = upsertInjectBlock(existing, output, injectTarget);
+    } catch (err) {
+      console.error(`\x1b[31m✘ ${err.message}\x1b[0m`);
+      process.exit(1);
+    }
+    await fs.writeFile(targetAbs, next, 'utf-8');
+    info(`\n  \x1b[1;32m✔ Context injected into ${injectTarget} (~${tokenEstimate.toLocaleString()} tokens)\x1b[0m`);
+    return;
+  }
 
   if (stdoutMode) {
     process.stdout.write(output);
@@ -178,8 +278,34 @@ async function main() {
   const clipboardOnly = args.includes('--clipboard-only') || (config.clipboardOnly ?? false);
   const stdoutMode    = args.includes('--stdout')         || (config.stdout       ?? false);
   const watchMode     = args.includes('--watch');
+  const checkMode     = args.includes('--check');
   const format        = args.find(a => a.startsWith('--format='))?.slice('--format='.length)
                         ?? config.format ?? 'markdown';
+
+  // --inject[=<file>] or config "inject": true | "<file>"
+  const injectFlag = args.find(a => a === '--inject' || a.startsWith('--inject='));
+  let injectTarget = null;
+  if (injectFlag || config.inject) {
+    if (injectFlag?.startsWith('--inject=')) {
+      injectTarget = injectFlag.slice('--inject='.length);
+    } else if (typeof config.inject === 'string') {
+      injectTarget = config.inject;
+    }
+    if (!injectTarget) {
+      injectTarget = (await isFile(path.resolve('CLAUDE.md'))) ? 'CLAUDE.md'
+        : (await isFile(path.resolve('AGENTS.md'))) ? 'AGENTS.md'
+        : 'CLAUDE.md';
+    }
+  }
+
+  if (injectTarget && format === 'json') {
+    console.error(`\x1b[31m✘ --inject requires markdown output (drop --format=json).\x1b[0m`);
+    process.exit(1);
+  }
+  if (checkMode && watchMode) {
+    console.error(`\x1b[31m✘ --check and --watch cannot be combined.\x1b[0m`);
+    process.exit(1);
+  }
 
   const cliIgnores = args
     .filter(a => a.startsWith('--ignore='))
@@ -233,7 +359,7 @@ async function main() {
   }
 
   const baseDir = absTargets.length === 1 ? absTargets[0] : cwd;
-  const runOpts = { absTargets, baseDir, allIgnores, clipboardOnly, stdoutMode, format, info };
+  const runOpts = { absTargets, baseDir, allIgnores, clipboardOnly, stdoutMode, format, info, checkMode, injectTarget };
 
   await runOnce({ ...runOpts, silent: false });
 

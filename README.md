@@ -63,6 +63,8 @@ contextsnap [directory ...] [options]
 | `--watch` | Re-run automatically on every file change. Press Ctrl+C to stop |
 | `--format=<fmt>` | Output format: `markdown` (default) or `json` |
 | `--ignore=<pattern>` | Skip folders/files matching `<pattern>` — whole-name match, `*` wildcards supported (repeatable) |
+| `--inject[=<file>]` | Write the snapshot between `<!-- contextsnap:start/end -->` markers in `CLAUDE.md` / `AGENTS.md` (or `<file>`) — every AI session picks it up automatically |
+| `--check` | Exit 1 if the committed snapshot (`.ai-context.md`, or the injected block with `--inject`) is stale — use in CI like a lint step |
 | `--mcp` | Start an MCP stdio server for Claude Desktop / Claude Code / Cursor |
 | `-h, --help` | Show help with examples |
 
@@ -146,12 +148,54 @@ and Claude will call `get_context` automatically to scan your codebase.
 }
 ```
 
-### MCP Tool: `get_context`
+### MCP Tools
+
+**`get_context`** — full snapshot of every export.
 
 | Parameter | Type | Description |
 |---|---|---|
 | `dirs` | `string[]` (optional) | Directories to scan. Defaults to auto-detect. |
 | `ignore` | `string[]` (optional) | Patterns to skip (e.g. `["__tests__", "*.mock.*"]`) |
+
+**`search_exports`** — find an export by name, signature, or JSDoc substring. Returns `file:line` locations so the agent can jump straight to a definition. Use before writing a new utility to check whether one already exists.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `query` | `string` | Case-insensitive substring to match |
+| `dirs`, `ignore` | optional | Same as `get_context` |
+
+**`get_file_context`** — signatures, line numbers, and JSDoc for a single file. Much cheaper than `get_context` when the agent already knows the file.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `path` | `string` | File path relative to cwd |
+
+---
+
+## Inject Mode — context in CLAUDE.md, zero paste
+
+`contextsnap src --inject` writes the snapshot between markers in your `CLAUDE.md` (or `AGENTS.md` — auto-detected, or any file via `--inject=<file>`):
+
+```markdown
+# My project rules          ← your content, never touched
+
+<!-- contextsnap:start -->
+# CONTEXTSNAP CODEBASE CONTEXT …
+<!-- contextsnap:end -->
+```
+
+Every Claude Code / agent session loads it automatically — no clipboard, no MCP setup. Re-running replaces only the marker block; idempotent. Combine with `--watch` to keep it fresh on every save. Set `"inject": true` (or a filename) in `.contextsnaprc.json` to make it the default.
+
+---
+
+## Check Mode — CI drift guard
+
+`contextsnap src --check` regenerates the snapshot in memory and compares it against the committed one (`.ai-context.md`, or the injected block when combined with `--inject`). Generation dates are ignored; exit 1 on drift:
+
+```yaml
+# .github/workflows/context.yml
+- run: npx contextsnap src --check   # fails the build when the snapshot is stale
+```
 
 ---
 
