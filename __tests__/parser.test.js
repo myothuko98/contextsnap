@@ -447,6 +447,22 @@ export class Third {}
     expect(result.exports.find(e => e.name === 'Third').line).toBe(11);
   });
 
+  it('truncates oversized JSDoc blocks', async () => {
+    const hugeDoc = 'A'.repeat(2000);
+    const tmpFile = await fixture('huge.ts', `
+/**
+ * ${hugeDoc}
+ */
+export function documented(x: number): number {
+  return x;
+}
+`);
+    const result = await parseFile(tmpFile);
+    const fn = result.exports.find(e => e.name === 'documented');
+    expect(fn.jsdoc.length).toBeLessThan(700);
+    expect(fn.jsdoc).toContain('[…truncated]');
+  });
+
   it('reports no warnings when regex extraction is complete', async () => {
     const tmpFile = await fixture('clean.js', `
 export function solid(a) { return a; }

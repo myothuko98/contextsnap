@@ -63,6 +63,8 @@ contextsnap [directory ...] [options]
 | `--watch` | Re-run automatically on every file change. Press Ctrl+C to stop |
 | `--format=<fmt>` | Output format: `markdown` (default) or `json` |
 | `--ignore=<pattern>` | Skip folders/files matching `<pattern>` — whole-name match, `*` wildcards supported (repeatable) |
+| `--budget=<tokens>` | Fit the snapshot under a token ceiling — trims the least-imported exports first |
+| `--dupes` | Report likely duplicate exports (`formatDate` vs `dateFormat`); exit 1 when any found |
 | `--inject[=<file>]` | Write the snapshot between `<!-- contextsnap:start/end -->` markers in `CLAUDE.md` / `AGENTS.md` (or `<file>`) — every AI session picks it up automatically |
 | `--check` | Exit 1 if the committed snapshot (`.ai-context.md`, or the injected block with `--inject`) is stale — use in CI like a lint step |
 | `--mcp` | Start an MCP stdio server for Claude Desktop / Claude Code / Cursor |
@@ -135,6 +137,8 @@ Restart Claude Desktop. The `get_context` tool will appear. Just ask:
 
 and Claude will call `get_context` automatically to scan your codebase.
 
+> **Important — Claude Desktop starts MCP servers in `/` or your home directory, not your project.** Tell Claude your project path once ("my project is at /Users/me/dev/myapp") and it will pass it via the tools' `root` parameter. Project-scoped hosts (Claude Code, Cursor) start the server in the project directory, so `root` is unnecessary there.
+
 ### Setup: Cursor / other MCP-compatible tools
 
 ```json
@@ -188,6 +192,39 @@ Every Claude Code / agent session loads it automatically — no clipboard, no MC
 
 ---
 
+## Token Budget — fit any context window
+
+`contextsnap src --budget=2000` trims the snapshot toward a token ceiling. contextsnap counts how many files import each export across your project (only imports that actually resolve to the scanned files — bare npm packages never inflate a rank) and trims the least-imported exports first, so the utilities your code leans on survive. A summary reports what was trimmed.
+
+Token counts are estimated at ~4 characters/token; real tokenizers vary, so treat the ceiling as a close target, not an exact guarantee. `--budget` also raises the scan cap from 300 to 5,000 files — it exists precisely for big repos.
+
+---
+
+## Duplicate Detector — find drift before your AI adds more
+
+`contextsnap src --dupes` flags exports that look like the same utility written twice:
+
+```
+⚠ 1 likely duplicate export pair(s):
+  • dateFormat (core/src/dates.ts:2) ≈ formatDate (ui/src/button.ts:3) — same words, different order
+```
+
+Catches identical names in different files and same-word/different-order names (`formatDate` vs `dateFormat`). Exits 1 when any are found, so it slots into CI next to `--check`.
+
+---
+
+## Monorepo Awareness
+
+In npm/yarn/pnpm workspaces, import hints for files in other packages use the package name instead of a brittle relative path:
+
+```typescript
+// import from '@acme/ui'        ← not '../../packages/ui/src/button'
+```
+
+Auto-detected from `package.json` `workspaces` or `pnpm-workspace.yaml` — no configuration.
+
+---
+
 ## Check Mode — CI drift guard
 
 `contextsnap src --check` regenerates the snapshot in memory and compares it against the committed one (`.ai-context.md`, or the injected block when combined with `--inject`). Generation dates are ignored; exit 1 on drift:
@@ -235,6 +272,8 @@ Create `.contextsnaprc.json` in your project root to set persistent defaults. CL
 | `format` | `"markdown"` \| `"json"` | Output format |
 | `clipboardOnly` | `boolean` | Don't write `.ai-context.md` |
 | `stdout` | `boolean` | Print to stdout |
+| `inject` | `boolean` \| `string` | Always inject into CLAUDE.md/AGENTS.md (or the given file) |
+| `budget` | `number` | Default token ceiling (same as `--budget`) |
 
 ---
 

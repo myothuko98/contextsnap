@@ -3,14 +3,19 @@ import path from 'path';
 import fs from 'fs/promises';
 import { scanDirectory, loadIgnoreFile } from '../lib/scanner.js';
 import { parseFile } from '../lib/parser.js';
-import { compileMarkdown, compileJSON, generateASCIITree } from '../lib/compiler.js';
+import { compileMarkdown, compileJSON, generateASCIITree, VERSION } from '../lib/compiler.js';
 import { copyToClipboard } from '../lib/clipboard.js';
 import { loadConfig } from '../lib/config.js';
+import { countImportUsage } from '../lib/usage.js';
+import { applyBudget } from '../lib/budget.js';
+import { detectWorkspaces } from '../lib/workspaces.js';
+import { findDuplicates } from '../lib/dupes.js';
 
 const CONTEXT_FILE = '.ai-context.md';
 const INJECT_START = '<!-- contextsnap:start -->';
 const INJECT_END = '<!-- contextsnap:end -->';
 const MAX_FILES = 300;
+const MAX_FILES_WITH_BUDGET = 5000;
 const MAX_STACK_DEPS = 20;
 const AUTO_DETECT_DIRS = ['src/utils', 'src/lib', 'src/helpers', 'utils', 'lib', 'src'];
 
@@ -32,6 +37,10 @@ const HELP = `
     --ignore=<pattern>   Skip files/folders matching <pattern>. Plain patterns
                          match whole folder/file names; * wildcards supported
                          (repeatable: --ignore=__tests__ --ignore=*.mock.*)
+    --budget=<tokens>    Fit the snapshot under a token ceiling by trimming
+                         the least-imported exports first
+    --dupes              Report likely duplicate exports (formatDate vs
+                         dateFormat) and exit 1 when any are found
     --inject[=<file>]    Write the snapshot between contextsnap markers in
                          CLAUDE.md / AGENTS.md (or <file>) instead of the
                          clipboard — every AI session picks it up automatically
@@ -52,6 +61,8 @@ const HELP = `
     contextsnap src --stdout > ctx.md    # redirect anywhere
     contextsnap src --watch              # live refresh on save
     contextsnap src --format=json        # machine-readable output
+    contextsnap src --budget=2000        # fit under 2k tokens
+    contextsnap src --dupes              # find duplicate utilities
     contextsnap src --inject             # keep CLAUDE.md context fresh
     contextsnap src --check              # CI: fail if snapshot is stale
     contextsnap --mcp                    # start MCP server
@@ -83,12 +94,19 @@ async function readFileOrNull(p) {
   }
 }
 
-/** Strips the generation date so day-to-day regeneration compares equal. */
+/** Strips the generation date/version stamp so regeneration compares equal. */
 function normalizeSnapshot(s) {
   return s
-    .replace(/# CONTEXTSNAP CODEBASE CONTEXT \(Generated \d{4}-\d{2}-\d{2}\)/, '# CONTEXTSNAP CODEBASE CONTEXT (Generated)')
+    .replace(/# CONTEXTSNAP CODEBASE CONTEXT \(Generated [^)]*\)/, '# CONTEXTSNAP CODEBASE CONTEXT (Generated)')
     .replace(/"generated": "\d{4}-\d{2}-\d{2}"/, '"generated": ""')
     .trim();
+}
+
+/** Extracts the contextsnap version stamped into a snapshot, or null. */
+function snapshotVersion(s) {
+  return s.match(/contextsnap@(\d+\.\d+\.\d+)/)?.[1]
+    ?? s.match(/"version": "(\d+\.\d+\.\d+)"/)?.[1]
+    ?? null;
 }
 
 /** Returns the content between the contextsnap markers, or null if absent. */
@@ -130,7 +148,7 @@ async function detectStack() {
 }
 
 /** Runs scan → parse → output once. Returns when done. */
-async function runOnce({ absTargets, baseDir, allIgnores, clipboardOnly, stdoutMode, format, info, silent, checkMode, injectTarget }) {
+async function runOnce({ absTargets, baseDir, allIgnores, clipboardOnly, stdoutMode, format, info, silent, checkMode, injectTarget, dupesMode, budget, workspaces }) {
   // Spinning loader (suppressed in --stdout mode and in silent watch refreshes)
   let spinner;
   if (!stdoutMode && !silent) {
@@ -159,10 +177,15 @@ async function runOnce({ absTargets, baseDir, allIgnores, clipboardOnly, stdoutM
     process.exit(1);
   }
 
-  if (files.length > MAX_FILES) {
+  // --budget exists precisely for big repos, so it lifts the file cap
+  // (up to a hard safety ceiling) instead of erroring out.
+  const fileCap = budget ? MAX_FILES_WITH_BUDGET : MAX_FILES;
+  if (files.length > fileCap) {
     stopSpinner();
-    console.error(`\x1b[33m⚠ Too many files (${files.length}). Limit is ${MAX_FILES}.\x1b[0m`);
-    console.error(`  Point at a smaller folder (e.g. src/utils) or exclude folders with --ignore=<pattern>.`);
+    console.error(`\x1b[33m⚠ Too many files (${files.length}). Limit is ${fileCap}.\x1b[0m`);
+    console.error(budget
+      ? `  Point at a smaller folder (e.g. src/utils) or exclude folders with --ignore=<pattern>.`
+      : `  Use --budget=<tokens> to scan large repos (trims least-used exports), point at a smaller folder, or exclude folders with --ignore=<pattern>.`);
     process.exit(1);
   }
 
@@ -185,13 +208,46 @@ async function runOnce({ absTargets, baseDir, allIgnores, clipboardOnly, stdoutM
     return;
   }
 
+  // ── --dupes: report likely duplicate exports, exit 1 when any found ──
+  if (dupesMode) {
+    const dupes = findDuplicates(scannedFiles);
+    if (dupes.length === 0) {
+      info(`\n  \x1b[1;32m✔ No likely duplicate exports found.\x1b[0m`);
+      return;
+    }
+    console.error(`\n\x1b[33m⚠ ${dupes.length} likely duplicate export pair(s):\x1b[0m`);
+    for (const { a, b, reason } of dupes) {
+      const locA = `${path.relative(baseDir, a.file)}:${a.line ?? '?'}`;
+      const locB = `${path.relative(baseDir, b.file)}:${b.line ?? '?'}`;
+      console.error(`  \x1b[33m•\x1b[0m ${a.name} (${locA}) ≈ ${b.name} (${locB}) — ${reason}`);
+    }
+    console.error(`\n  Consolidate before they drift apart.`);
+    process.exit(1);
+  }
+
+  // ── --budget: trim least-imported exports until the estimate fits ──
+  let compileFiles = scannedFiles;
+  if (budget) {
+    const usage = await countImportUsage({
+      cwd: process.cwd(),
+      ignorePatterns: allIgnores,
+      targetFiles: files,
+      workspaceNames: (workspaces ?? []).map(w => w.name),
+    });
+    const trimmed = applyBudget(scannedFiles, budget, usage);
+    compileFiles = trimmed.files;
+    if (trimmed.dropped.length > 0) {
+      info(`\x1b[33m⚠ Budget ${budget}: trimmed ${trimmed.dropped.length} low-usage export(s) (kept ~${trimmed.estTokens} est. tokens).\x1b[0m`);
+    }
+  }
+
   const stack = await detectStack();
   // Injected snapshots live at the project root (CLAUDE.md), so import hints
   // and display paths must be relative to cwd, not the scanned dir.
   const contextBase = injectTarget ? process.cwd() : baseDir;
   const output = format === 'json'
-    ? compileJSON(scannedFiles, contextBase, { stack })
-    : compileMarkdown(scannedFiles, contextBase, { stack });
+    ? compileJSON(compileFiles, contextBase, { stack, workspaces })
+    : compileMarkdown(compileFiles, contextBase, { stack, workspaces });
   const tokenEstimate = Math.round(output.length / 4);
 
   // ── --check: compare freshly generated output against the committed snapshot ──
@@ -204,6 +260,14 @@ async function runOnce({ absTargets, baseDir, allIgnores, clipboardOnly, stdoutM
 
     if (committed === null) {
       console.error(`\x1b[31m✘ ${targetName} ${existing === null ? 'does not exist' : 'has no contextsnap block'} — run contextsnap${injectTarget ? ' --inject' : ''} first.\x1b[0m`);
+      process.exit(1);
+    }
+    // Different generator version ⇒ formats may differ; a plain-diff verdict
+    // would be misleading. Fail loudly with the real reason instead.
+    const committedVersion = snapshotVersion(committed);
+    if (committedVersion !== VERSION) {
+      console.error(`\x1b[31m✘ ${targetName} was generated by contextsnap@${committedVersion ?? '<2.2.1 (no version stamp)'}, but you are running ${VERSION}.\x1b[0m`);
+      console.error(`  Regenerate the snapshot with this version, and pin the same version in CI (e.g. npx contextsnap@${VERSION} --check).`);
       process.exit(1);
     }
     if (normalizeSnapshot(committed) === normalizeSnapshot(output)) {
@@ -279,6 +343,15 @@ async function main() {
   const stdoutMode    = args.includes('--stdout')         || (config.stdout       ?? false);
   const watchMode     = args.includes('--watch');
   const checkMode     = args.includes('--check');
+  const dupesMode     = args.includes('--dupes');
+
+  const budgetArg = args.find(a => a.startsWith('--budget='))?.slice('--budget='.length)
+                    ?? config.budget;
+  const budget = budgetArg !== undefined ? Number(budgetArg) : null;
+  if (budget !== null && (!Number.isFinite(budget) || budget <= 0)) {
+    console.error(`\x1b[31m✘ --budget must be a positive number of tokens (got '${budgetArg}').\x1b[0m`);
+    process.exit(1);
+  }
   const format        = args.find(a => a.startsWith('--format='))?.slice('--format='.length)
                         ?? config.format ?? 'markdown';
 
@@ -359,7 +432,8 @@ async function main() {
   }
 
   const baseDir = absTargets.length === 1 ? absTargets[0] : cwd;
-  const runOpts = { absTargets, baseDir, allIgnores, clipboardOnly, stdoutMode, format, info, checkMode, injectTarget };
+  const workspaces = await detectWorkspaces(cwd);
+  const runOpts = { absTargets, baseDir, allIgnores, clipboardOnly, stdoutMode, format, info, checkMode, injectTarget, dupesMode, budget, workspaces };
 
   await runOnce({ ...runOpts, silent: false });
 

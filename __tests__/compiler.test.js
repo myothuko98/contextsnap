@@ -93,9 +93,10 @@ describe('compileMarkdown()', () => {
     expect(md).not.toContain('## File: empty.ts');
   });
 
-  it('includes the CONTEXTSNAP header with a date', () => {
+  it('includes the CONTEXTSNAP header with a date and version stamp', () => {
     const md = compileMarkdown(mockFiles);
     expect(md).toContain('# CONTEXTSNAP CODEBASE CONTEXT');
+    expect(md).toMatch(/contextsnap@\d+\.\d+\.\d+/);
   });
 
   it('includes the AI reuse preamble', () => {

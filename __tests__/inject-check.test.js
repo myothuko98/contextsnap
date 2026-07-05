@@ -145,6 +145,33 @@ describe('Integration — --check', () => {
     expect(res.stderr).toContain('stale');
   }, 20000);
 
+  it('exits 1 with a version message when the snapshot came from another version', async () => {
+    const dir = await project();
+    await seedSnapshot(dir);
+    const md = await readFile(join(dir, '.ai-context.md'), 'utf-8');
+    await writeFile(join(dir, '.ai-context.md'), md.replace(/contextsnap@\d+\.\d+\.\d+/, 'contextsnap@1.0.0'), 'utf-8');
+
+    const res = await run(['.', '--check'], dir);
+    expect(res.code).toBe(1);
+    expect(res.stderr).toContain('contextsnap@1.0.0');
+    expect(res.stderr).toContain('pin the same version');
+  }, 20000);
+
+  it('--budget lifts the 300-file cap on large repos', async () => {
+    const dir = await project();
+    await Promise.all(Array.from({ length: 320 }, (_, i) =>
+      writeFile(join(dir, `f${i}.ts`), `export const C${i} = ${i};`, 'utf-8')
+    ));
+
+    const capped = await run(['.', '--stdout'], dir);
+    expect(capped.code).toBe(1);
+    expect(capped.stderr).toContain('--budget');
+
+    const budgeted = await run(['.', '--stdout', '--budget=800'], dir);
+    expect(budgeted.code).toBe(0);
+    expect(budgeted.stdout).toContain('# CONTEXTSNAP CODEBASE CONTEXT');
+  }, 30000);
+
   it('exits 1 when no snapshot exists yet', async () => {
     const dir = await project();
     const res = await run(['.', '--check'], dir);
